@@ -1,104 +1,152 @@
-// ====================================================================
-// doPost関数（生徒用と統合した完成形イメージ）
-// ====================================================================
+const MASTER_SHEET_NAME = "管理者シート";
+const TEMPLATE_SHEET_NAME = "テンプレートシート";
+
+// ==========================================
+// 1. GETリクエスト（ステータス取得用）
+// ==========================================
+function doGet(e) {
+  const params = e.parameter || {};
+  const action = params.action;
+  const token = params.token;
+
+  // アプリを開いた時に「現在出勤中か？」を返すAPI
+  if (action === 'status' && token) {
+    try {
+      const info = getTeacherStatus(token);
+      return jsonResponse({ ok: true, data: info });
+    } catch(err) {
+      return jsonResponse({ ok: false, error: err.message });
+    }
+  }
+  return HtmlService.createHtmlOutput("Teacher API is running.");
+}
+
+function getTeacherStatus(token) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const masterSheet = ss.getSheetByName(MASTER_SHEET_NAME);
+  const masterData = masterSheet.getDataRange().getValues();
+  
+  let teacherInfo = null;
+  // 管理者シート（A:ID, B:名前, C:トークン, D:個人シート名）
+  for (let i = 1; i < masterData.length; i++) {
+    if (String(masterData[i][2]).trim() === token) {
+      teacherInfo = { id: masterData[i][0], name: masterData[i][1], sheetName: masterData[i][3] };
+      break;
+    }
+  }
+  if (!teacherInfo) throw new Error("無効なURL（トークン）です。");
+
+  const targetSheet = ss.getSheetByName(teacherInfo.sheetName);
+  if (!targetSheet) {
+    return { name: teacherInfo.name, status: "not_started" }; // シートがない＝未出勤
+  }
+
+  const data = targetSheet.getDataRange().getValues();
+  const todayStr = Utilities.formatDate(new Date(), "JST", "yyyy/MM/dd");
+  
+  let status = "not_started";
+  let plan = "";
+
+  for (let i = data.length - 1; i >= 1; i--) {
+    const rowDate = data[i][0] instanceof Date ? Utilities.formatDate(data[i][0], "JST", "yyyy/MM/dd") : data[i][0];
+    if (rowDate === todayStr) {
+      if (!data[i][2]) { // C列(退勤)が空なら出勤中
+        status = "working";
+        plan = data[i][4]; // E列: 本日の業務予定
+      } else {
+        status = "completed"; // 今日は退勤済み
+      }
+      break;
+    }
+  }
+  return { name: teacherInfo.name, status: status, plan: plan };
+}
+
+// ==========================================
+// 2. POSTリクエスト（打刻と報告の書き込み）
+// ==========================================
 function doPost(e) {
   try {
     const body = JSON.parse(e.postData.contents || '{}');
     const action = body.action;
-
-    // ----- 【生徒用】設定保存 -----
-    if (action === 'saveSettings') {
-      const msg = saveStudentSettings(body.token, body.examName, body.examDate);
-      return jsonResponse({ ok: true, message: msg });
+    const token = body.token;
+    
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const masterSheet = ss.getSheetByName(MASTER_SHEET_NAME);
+    const masterData = masterSheet.getDataRange().getValues();
+    
+    let teacherInfo = null;
+    for (let i = 1; i < masterData.length; i++) {
+      if (String(masterData[i][2]).trim() === token) {
+        teacherInfo = { id: masterData[i][0], name: masterData[i][1], sheetName: masterData[i][3] };
+        break;
+      }
+    }
+    if (!teacherInfo) throw new Error("無効なトークンです。");
+    
+    // シートがない場合はテンプレートから自動作成
+    let targetSheet = ss.getSheetByName(teacherInfo.sheetName);
+    if (!targetSheet) {
+      const templateSheet = ss.getSheetByName(TEMPLATE_SHEET_NAME);
+      if (templateSheet) {
+        targetSheet = templateSheet.copyTo(ss);
+        targetSheet.setName(teacherInfo.sheetName);
+      } else {
+        targetSheet = ss.insertSheet(teacherInfo.sheetName);
+        targetSheet.appendRow(["日付", "出勤", "退勤", "作業時間", "業務報告", "成果報告"]);
+      }
+    }
+    
+    const now = new Date();
+    const todayStr = Utilities.formatDate(now, "JST", "yyyy/MM/dd");
+    const timeStr = Utilities.formatDate(now, "JST", "HH:mm");
+    
+    const data = targetSheet.getDataRange().getValues();
+    let targetRow = -1;
+    let clockInTime = null;
+    
+    // 今日の行を探す
+    for (let i = data.length - 1; i >= 1; i--) {
+      const rowDate = data[i][0] instanceof Date ? Utilities.formatDate(data[i][0], "JST", "yyyy/MM/dd") : data[i][0];
+      if (rowDate === todayStr) {
+        targetRow = i + 1;
+        clockInTime = data[i][1]; // B列 出勤時刻
+        break;
+      }
     }
 
-    // ----- 【講師用】出勤・退勤報告 -----
-    if (action === 'clockIn' || action === 'clockOut') {
-      return jsonResponse(processTeacherAttendance(body));
+    // 🌟 出勤時の処理（E列に予定を書き込む）
+    if (action === "clockIn") {
+      if (targetRow !== -1 && !data[targetRow-1][2]) return jsonResponse({ ok: false, error: "すでに出勤しています" });
+      targetSheet.appendRow([todayStr, timeStr, "", "", body.plan, ""]);
+      return jsonResponse({ ok: true, message: "出勤しました。本日の業務を開始します。" });
+    } 
+    
+    // 🌟 退勤時の処理（F列に成果、D列に作業時間を書き込む）
+    if (action === "clockOut") {
+      if (targetRow === -1 || data[targetRow-1][2]) return jsonResponse({ ok: false, error: "出勤記録がないか、すでに退勤済みです" });
+      
+      targetSheet.getRange(targetRow, 3).setValue(timeStr);   // C列: 退勤
+      targetSheet.getRange(targetRow, 6).setValue(body.result); // F列: 成果報告
+      
+      // 作業時間の自動計算（D列）
+      if (clockInTime) {
+        const inDate = new Date(todayStr + " " + (clockInTime instanceof Date ? Utilities.formatDate(clockInTime, "JST", "HH:mm") : clockInTime));
+        const diffMs = now - inDate;
+        if (diffMs > 0) {
+          const h = Math.floor(diffMs / 3600000);
+          const m = Math.floor((diffMs % 3600000) / 60000);
+          targetSheet.getRange(targetRow, 4).setValue(`${h}時間${m}分`); 
+        }
+      }
+      return jsonResponse({ ok: true, message: "退勤と成果報告を完了しました。お疲れ様でした！" });
     }
 
-    return jsonResponse({ ok: false, error: 'Unknown action: ' + action });
   } catch (err) {
-    return jsonResponse({ ok: false, error: String(err && err.message || err) });
+    return jsonResponse({ ok: false, error: err.message });
   }
 }
 
-// ====================================================================
-// 講師用の勤怠処理ロジック
-// ====================================================================
-function processTeacherAttendance(body) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const adminSheet = ss.getSheetByName('管理者シート');
-  const adminData = adminSheet.getDataRange().getValues();
-
-  // 1. 講師の認証
-  let teacher = null;
-  for (let i = 1; i < adminData.length; i++) {
-    if (adminData[i][2] === body.token) { // C列がトークン
-      teacher = {
-        id: adminData[i][0],
-        name: adminData[i][1],
-        sheetName: adminData[i][3] // D列が個別シート名
-      };
-      break;
-    }
-  }
-  if (!teacher) return { ok: false, error: 'トークンが無効です。URLを確認してください。' };
-
-  // 2. 個別シートの取得（なければテンプレートから作成）
-  let targetSheet = ss.getSheetByName(teacher.sheetName);
-  if (!targetSheet) {
-    const template = ss.getSheetByName('テンプレートシート');
-    if (!template) return { ok: false, error: 'テンプレートシートが見つかりません。' };
-    targetSheet = template.copyTo(ss).setName(teacher.sheetName);
-  }
-
-  const now = new Date();
-  const todayStr = Utilities.formatDate(now, "JST", "yyyy/MM/dd");
-  const timeStr = Utilities.formatDate(now, "JST", "HH:mm");
-
-  const data = targetSheet.getDataRange().getValues();
-  let targetRow = -1;
-
-  // 今日の記録を探す
-  for (let i = data.length - 1; i >= 1; i--) {
-    const rowDate = data[i][0] instanceof Date ? Utilities.formatDate(data[i][0], "JST", "yyyy/MM/dd") : data[i][0];
-    if (rowDate === todayStr) {
-      targetRow = i + 1;
-      break;
-    }
-  }
-
-  // --- 出勤処理 ---
-  if (body.action === 'clockIn') {
-    if (targetRow !== -1 && data[targetRow - 1][1] !== "") {
-      return { ok: false, error: '本日はすでに出勤記録があります。' };
-    }
-    // A:日付, B:出勤(時間), C:退勤, D:作業時間, E:業務報告(予定), F:成果報告
-    targetSheet.appendRow([todayStr, timeStr, "", "", body.plannedTask, ""]);
-    return { ok: true, message: `${teacher.name} 先生、おはようございます！\n本日の業務予定を記録しました。` };
-  }
-
-  // --- 退勤処理 ---
-  if (body.action === 'clockOut') {
-    if (targetRow === -1) return { ok: false, error: '本日の出勤記録が見つかりません。' };
-    if (data[targetRow - 1][2] !== "") return { ok: false, error: '本日はすでに退勤済みです。' };
-
-    // 退勤時間と成果報告を記録
-    targetSheet.getRange(targetRow, 3).setValue(timeStr);
-    targetSheet.getRange(targetRow, 6).setValue(body.resultTask);
-
-    // 作業時間の計算（C列 - B列）
-    const inTimeStr = String(data[targetRow - 1][1]);
-    if (inTimeStr) {
-      const inParts = inTimeStr.split(':');
-      const inDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(inParts[0]), parseInt(inParts[1]));
-      const diffMs = now.getTime() - inDate.getTime();
-      const hours = Math.floor(diffMs / 3600000);
-      const minutes = Math.floor((diffMs % 3600000) / 60000);
-      targetSheet.getRange(targetRow, 4).setValue(`${hours}時間${minutes}分`);
-    }
-    
-    return { ok: true, message: `退勤と成果報告を記録しました。\n${teacher.name} 先生、本日もお疲れ様でした！` };
-  }
+function jsonResponse(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }

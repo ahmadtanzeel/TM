@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>講師ダッシュボード | SSS Education</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    :root {
+      --gold: #d3ad4f;
+      --black: #000000;
+      --card-bg: #1a1a1a;
+      --text-gray: #a0a0a0;
+      --github-green: #2ea043;
+      --github-border: #30363d;
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: var(--black); color: #fff; margin: 0; padding: 20px; }
+    .header { text-align: center; margin-bottom: 30px; border-bottom: 1px solid var(--github-border); padding-bottom: 20px; }
+    h1 { color: var(--gold); font-size: 20px; margin: 0; letter-spacing: 2px; }
+    
+    .card { background-color: var(--card-bg); border: 1px solid var(--github-border); border-radius: 8px; padding: 25px; max-width: 500px; margin: 0 auto; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+    .status-badge { display: inline-block; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; margin-bottom: 15px; border: 1px solid;}
+    
+    .status-working { border-color: var(--gold); color: var(--gold); background: rgba(211, 173, 79, 0.1); }
+    .status-standby { border-color: var(--text-gray); color: var(--text-gray); background: rgba(255, 255, 255, 0.1); }
+
+    label { display: block; font-size: 13px; color: var(--text-gray); margin-bottom: 8px; text-align: left; }
+    textarea { width: 100%; height: 120px; background: #0d1117; border: 1px solid var(--github-border); color: #fff; padding: 12px; border-radius: 6px; box-sizing: border-box; font-family: monospace; resize: none; margin-bottom: 20px;}
+    textarea:focus { outline: none; border-color: var(--gold); }
+    
+    button { width: 100%; padding: 14px; border-radius: 6px; border: none; font-weight: bold; font-size: 15px; cursor: pointer; transition: 0.2s; letter-spacing: 1px;}
+    button:disabled { opacity: 0.5; cursor: wait; }
+    .btn-start { background-color: var(--github-green); color: #fff; }
+    .btn-end { background-color: var(--gold); color: #000; }
+    
+    #loading { text-align: center; color: var(--text-gray); font-size: 14px; padding: 50px 0; }
+    #ui-container { display: none; }
+    .plan-text-display { text-align: left; background: #0d1117; padding: 12px; border-radius: 6px; font-size: 13px; color: #c9d1d9; border: 1px solid var(--github-border); margin-bottom: 20px; white-space: pre-wrap;}
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <h1>SSS TEACHER PORTAL</h1>
+    <div style="font-size: 13px; color: var(--text-gray); margin-top: 5px;" id="teacher-name">Loading...</div>
+  </div>
+
+  <div id="loading">📡 SYSTEM INITIALIZING...</div>
+
+  <div id="ui-container" class="card">
+    <div id="status-badge" class="status-badge">状態チェック中</div>
+
+    <div id="clockin-section" style="display: none;">
+      <label>📝 Commit Plan (本日の業務予定を宣言)</label>
+      <textarea id="plan-input" placeholder="- 生徒Aの数学指導準備&#10;- 保護者面談の記録作成&#10;など、今日のコミットメントを入力"></textarea>
+      <button class="btn-start" id="btn-in" onclick="sendAction('clockIn')">▶ 業務開始 (Clock In)</button>
+    </div>
+
+    <div id="clockout-section" style="display: none;">
+      <label>📌 宣言した本日の業務</label>
+      <div id="current-plan" class="plan-text-display"></div>
+      
+      <label>🚀 Push Result (実際の成果・報告)</label>
+      <textarea id="result-input" placeholder="- 生徒Aの数学指導完了。次回は三角関数。&#10;- 保護者面談記録をスプレッドシートに反映済み。&#10;など、成果や引継ぎ事項を入力"></textarea>
+      <button class="btn-end" id="btn-out" onclick="sendAction('clockOut')">⏹ 業務終了＆報告 (Push & Clock Out)</button>
+    </div>
+
+    <div id="completed-section" style="display: none; text-align: center; padding: 20px 0;">
+      <h3 style="color: var(--text-gray);">🎉 本日の業務は終了しています</h3>
+      <p style="font-size: 13px; color: #666;">お疲れ様でした。ゆっくり休んでください。</p>
+    </div>
+  </div>
+
+  <script>
+    // ★新しいGASのWebアプリURLに書き換えてください
+    const API_ENDPOINT = 'https://script.google.com/macros/s/AKfycbymAQUjNiIR9fj-l5N_jBUAIIck_zU6gPtG-qozYdOTLNeybwZIUM5qRvG2M2RUQbkHmw/exec';
+    const teacherToken = new URLSearchParams(location.search).get('token');
+
+    document.addEventListener('DOMContentLoaded', async () => {
+      if (!teacherToken) {
+        alert('URLが正しくありません。トークンが含まれていません。');
+        return;
+      }
+      await fetchStatus();
+    });
+
+    // 1. 現在のステータスを取得して画面を切り替える
+    async function fetchStatus() {
+      try {
+        const res = await fetch(`${API_ENDPOINT}?action=status&token=${teacherToken}`);
+        const json = await res.json();
+        
+        if (!json.ok) throw new Error(json.error);
+        
+        document.getElementById('teacher-name').innerText = json.data.name + ' 先生';
+        switchUI(json.data.status, json.data.plan);
+
+      } catch (err) {
+        alert("初期化エラー: " + err.message);
+      } finally {
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('ui-container').style.display = 'block';
+      }
+    }
+
+    // 2. 状態に合わせてUIを切り替え
+    function switchUI(status, plan) {
+      const badge = document.getElementById('status-badge');
+      document.getElementById('clockin-section').style.display = 'none';
+      document.getElementById('clockout-section').style.display = 'none';
+      document.getElementById('completed-section').style.display = 'none';
+
+      if (status === 'not_started') {
+        badge.innerText = "● STANDBY (未出勤)";
+        badge.className = "status-badge status-standby";
+        document.getElementById('clockin-section').style.display = 'block';
+      } else if (status === 'working') {
+        badge.innerText = "🟢 WORKING (業務中)";
+        badge.className = "status-badge status-working";
+        document.getElementById('current-plan').innerText = plan || "（予定の宣言なし）";
+        document.getElementById('clockout-section').style.display = 'block';
+      } else if (status === 'completed') {
+        badge.innerText = "✅ COMPLETED (退勤済)";
+        badge.className = "status-badge status-standby";
+        document.getElementById('completed-section').style.display = 'block';
+      }
+    }
+
+    // 3. 出勤・退勤のアクションを送信
+    async function sendAction(action) {
+      const planVal = document.getElementById('plan-input').value;
+      const resultVal = document.getElementById('result-input').value;
+      const btn = action === 'clockIn' ? document.getElementById('btn-in') : document.getElementById('btn-out');
+
+      if (action === 'clockIn' && !planVal) {
+        alert("本日の業務予定（Plan）を宣言してください。"); return;
+      }
+      if (action === 'clockOut' && !resultVal) {
+        alert("本日の成果報告（Result）を入力してください。"); return;
+      }
+
+      btn.disabled = true;
+      const originalText = btn.innerText;
+      btn.innerText = "📡 通信中...";
+
+      try {
+        const payload = { action: action, token: teacherToken };
+        if (action === 'clockIn') payload.plan = planVal;
+        if (action === 'clockOut') payload.result = resultVal;
+
+        const res = await fetch(API_ENDPOINT, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // CORS回避
+          body: JSON.stringify(payload)
+        });
+        const json = await res.json();
+
+        if (json.ok) {
+          alert(json.message);
+          // 成功したら画面を再読み込みしてステータスを更新
+          location.reload(); 
+        } else {
+          throw new Error(json.error);
+        }
+      } catch (err) {
+        alert("送信エラー: " + err.message);
+        btn.disabled = false;
+        btn.innerText = originalText;
+      }
+    }
+  </script>
+</body>
+</html>
