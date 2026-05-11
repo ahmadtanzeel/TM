@@ -2,17 +2,16 @@ const MASTER_SHEET_NAME = "管理者シート";
 const TEMPLATE_SHEET_NAME = "テンプレートシート";
 
 // ==========================================
-// 1. GETリクエスト（ステータス取得用）
+// 1. GETリクエスト（ステータス＆統計データ取得）
 // ==========================================
 function doGet(e) {
   const params = e.parameter || {};
   const action = params.action;
   const token = params.token;
 
-  // アプリを開いた時に「現在出勤中か？」を返すAPI
   if (action === 'status' && token) {
     try {
-      const info = getTeacherStatus(token);
+      const info = getTeacherData(token);
       return jsonResponse({ ok: true, data: info });
     } catch(err) {
       return jsonResponse({ ok: false, error: err.message });
@@ -21,13 +20,12 @@ function doGet(e) {
   return HtmlService.createHtmlOutput("Teacher API is running.");
 }
 
-function getTeacherStatus(token) {
+function getTeacherData(token) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const masterSheet = ss.getSheetByName(MASTER_SHEET_NAME);
   const masterData = masterSheet.getDataRange().getValues();
   
   let teacherInfo = null;
-  // 管理者シート（A:ID, B:名前, C:トークン, D:個人シート名）
   for (let i = 1; i < masterData.length; i++) {
     if (String(masterData[i][2]).trim() === token) {
       teacherInfo = { id: masterData[i][0], name: masterData[i][1], sheetName: masterData[i][3] };
@@ -37,29 +35,110 @@ function getTeacherStatus(token) {
   if (!teacherInfo) throw new Error("無効なURL（トークン）です。");
 
   const targetSheet = ss.getSheetByName(teacherInfo.sheetName);
+  const emptyStats = {
+      daily: { labels: [], values: [] },
+      weekly: { labels: [], values: [] },
+      monthly: { labels: [], values: [] },
+      history: [],
+      total: "0時間0分"
+  };
+
+  // まだシートがない（出勤履歴ゼロ）場合
   if (!targetSheet) {
-    return { name: teacherInfo.name, status: "not_started" }; // シートがない＝未出勤
+    return { name: teacherInfo.name, status: "not_started", plan: "", stats: emptyStats };
   }
 
   const data = targetSheet.getDataRange().getValues();
   const todayStr = Utilities.formatDate(new Date(), "JST", "yyyy/MM/dd");
   
   let status = "not_started";
-  let plan = "";
+  let currentPlan = "";
 
-  for (let i = data.length - 1; i >= 1; i--) {
-    const rowDate = data[i][0] instanceof Date ? Utilities.formatDate(data[i][0], "JST", "yyyy/MM/dd") : data[i][0];
-    if (rowDate === todayStr) {
-      if (!data[i][2]) { // C列(退勤)が空なら出勤中
+  const dailyMap = {};
+  const weeklyMap = {};
+  const monthlyMap = {};
+  const historyList = [];
+  let totalMs = 0;
+
+  const getMonday = (d) => {
+    let day = d.getDay(), diff = d.getDate() - day + (day == 0 ? -6 : 1);
+    return new Date(d.getFullYear(), d.getMonth(), diff);
+  };
+
+  // 履歴データとグラフ用データを集計
+  for (let i = 1; i < data.length; i++) {
+    const rowDateStr = data[i][0] instanceof Date ? Utilities.formatDate(data[i][0], "JST", "yyyy/MM/dd") : data[i][0];
+    if (!rowDateStr) continue;
+    
+    const inTimeStr = data[i][1] instanceof Date ? Utilities.formatDate(data[i][1], "JST", "HH:mm") : data[i][1];
+    const outTimeStr = data[i][2] instanceof Date ? Utilities.formatDate(data[i][2], "JST", "HH:mm") : data[i][2];
+    const durationStr = data[i][3]; 
+    const plan = data[i][4];
+    const result = data[i][5];
+
+    // 今日のステータス判定
+    if (rowDateStr === todayStr) {
+      if (!outTimeStr) {
         status = "working";
-        plan = data[i][4]; // E列: 本日の業務予定
+        currentPlan = plan;
       } else {
-        status = "completed"; // 今日は退勤済み
+        status = "completed";
       }
-      break;
     }
+
+    // 時間の計算 (ms)
+    let diffMs = 0;
+    if (inTimeStr && outTimeStr) {
+       const inDate = new Date(rowDateStr + " " + inTimeStr);
+       const outDate = new Date(rowDateStr + " " + outTimeStr);
+       diffMs = outDate - inDate;
+    }
+    
+    if (diffMs > 0) {
+       totalMs += diffMs;
+       const dObj = new Date(rowDateStr);
+       const dayKey = Utilities.formatDate(dObj, "JST", "MM/dd");
+       dailyMap[dayKey] = (dailyMap[dayKey] || 0) + diffMs;
+
+       const monday = getMonday(dObj);
+       const weekKey = Utilities.formatDate(monday, "JST", "MM/dd") + "週";
+       weeklyMap[weekKey] = (weeklyMap[weekKey] || 0) + diffMs;
+
+       const monthKey = Utilities.formatDate(dObj, "JST", "yyyy/MM");
+       monthlyMap[monthKey] = (monthlyMap[monthKey] || 0) + diffMs;
+    }
+
+    // 履歴追加（最新のものが上に来るように unshift）
+    historyList.unshift({
+      date: rowDateStr,
+      in: inTimeStr || "---",
+      out: outTimeStr || "---",
+      time: durationStr || "---",
+      plan: plan || "",
+      result: result || ""
+    });
   }
-  return { name: teacherInfo.name, status: status, plan: plan };
+
+  const formatChartData = (map) => {
+    let labels = Object.keys(map).sort();
+    let values = labels.map(k => (map[k]/3600000).toFixed(1));
+    return { labels, values };
+  };
+
+  const formatTime = (ms) => { return `${Math.floor(ms/3600000)}時間${Math.floor((ms%3600000)/60000)}分`; };
+
+  return { 
+    name: teacherInfo.name, 
+    status: status, 
+    plan: currentPlan,
+    stats: {
+      daily: formatChartData(dailyMap),
+      weekly: formatChartData(weeklyMap),
+      monthly: formatChartData(monthlyMap),
+      history: historyList.slice(0, 30), // 最新30件に制限
+      total: formatTime(totalMs)
+    }
+  };
 }
 
 // ==========================================
@@ -84,7 +163,7 @@ function doPost(e) {
     }
     if (!teacherInfo) throw new Error("無効なトークンです。");
     
-    // シートがない場合はテンプレートから自動作成
+    // シートがない場合は自動作成
     let targetSheet = ss.getSheetByName(teacherInfo.sheetName);
     if (!targetSheet) {
       const templateSheet = ss.getSheetByName(TEMPLATE_SHEET_NAME);
@@ -105,31 +184,27 @@ function doPost(e) {
     let targetRow = -1;
     let clockInTime = null;
     
-    // 今日の行を探す
     for (let i = data.length - 1; i >= 1; i--) {
       const rowDate = data[i][0] instanceof Date ? Utilities.formatDate(data[i][0], "JST", "yyyy/MM/dd") : data[i][0];
       if (rowDate === todayStr) {
         targetRow = i + 1;
-        clockInTime = data[i][1]; // B列 出勤時刻
+        clockInTime = data[i][1];
         break;
       }
     }
 
-    // 🌟 出勤時の処理（E列に予定を書き込む）
     if (action === "clockIn") {
       if (targetRow !== -1 && !data[targetRow-1][2]) return jsonResponse({ ok: false, error: "すでに出勤しています" });
       targetSheet.appendRow([todayStr, timeStr, "", "", body.plan, ""]);
       return jsonResponse({ ok: true, message: "出勤しました。本日の業務を開始します。" });
     } 
     
-    // 🌟 退勤時の処理（F列に成果、D列に作業時間を書き込む）
     if (action === "clockOut") {
       if (targetRow === -1 || data[targetRow-1][2]) return jsonResponse({ ok: false, error: "出勤記録がないか、すでに退勤済みです" });
       
-      targetSheet.getRange(targetRow, 3).setValue(timeStr);   // C列: 退勤
-      targetSheet.getRange(targetRow, 6).setValue(body.result); // F列: 成果報告
+      targetSheet.getRange(targetRow, 3).setValue(timeStr);   
+      targetSheet.getRange(targetRow, 6).setValue(body.result); 
       
-      // 作業時間の自動計算（D列）
       if (clockInTime) {
         const inDate = new Date(todayStr + " " + (clockInTime instanceof Date ? Utilities.formatDate(clockInTime, "JST", "HH:mm") : clockInTime));
         const diffMs = now - inDate;
@@ -141,7 +216,6 @@ function doPost(e) {
       }
       return jsonResponse({ ok: true, message: "退勤と成果報告を完了しました。お疲れ様でした！" });
     }
-
   } catch (err) {
     return jsonResponse({ ok: false, error: err.message });
   }

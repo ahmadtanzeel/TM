@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <title>講師ダッシュボード | SSS Education</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  
   <style>
     :root {
       --gold: #d3ad4f;
@@ -13,11 +15,11 @@
       --github-green: #2ea043;
       --github-border: #30363d;
     }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: var(--black); color: #fff; margin: 0; padding: 20px; }
-    .header { text-align: center; margin-bottom: 30px; border-bottom: 1px solid var(--github-border); padding-bottom: 20px; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: var(--black); color: #fff; margin: 0; padding: 20px 20px 50px 20px; }
+    .header { text-align: center; margin-bottom: 20px; border-bottom: 1px solid var(--github-border); padding-bottom: 20px; }
     h1 { color: var(--gold); font-size: 20px; margin: 0; letter-spacing: 2px; }
     
-    .card { background-color: var(--card-bg); border: 1px solid var(--github-border); border-radius: 8px; padding: 25px; max-width: 500px; margin: 0 auto; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+    .card { background-color: var(--card-bg); border: 1px solid var(--github-border); border-radius: 8px; padding: 25px; margin-bottom: 30px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
     .status-badge { display: inline-block; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; margin-bottom: 15px; border: 1px solid;}
     
     .status-working { border-color: var(--gold); color: var(--gold); background: rgba(211, 173, 79, 0.1); }
@@ -35,6 +37,23 @@
     #loading { text-align: center; color: var(--text-gray); font-size: 14px; padding: 50px 0; }
     #ui-container { display: none; }
     .plan-text-display { text-align: left; background: #0d1117; padding: 12px; border-radius: 6px; font-size: 13px; color: #c9d1d9; border: 1px solid var(--github-border); margin-bottom: 20px; white-space: pre-wrap;}
+    
+    /* 統計＆グラフ用CSS */
+    .section-title { font-size: 16px; color: var(--white); margin: 40px 0 20px; padding-left: 10px; border-left: 3px solid var(--gold); letter-spacing: 2px; }
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 30px; }
+    .stat-card { background-color: var(--card-bg); border: 1px solid var(--github-border); padding: 15px 10px; text-align: center; border-radius: 6px; }
+    .stat-title { font-size: 11px; color: var(--text-gray); margin-bottom: 8px; letter-spacing: 1px; }
+    .stat-value { font-size: 18px; color: var(--gold); font-weight: bold; }
+    
+    .chart-container { background-color: var(--card-bg); border: 1px solid var(--github-border); padding: 20px; margin-bottom: 20px; border-radius: 8px; }
+    .chart-title { font-size: 13px; color: var(--text-gray); margin-bottom: 15px; letter-spacing: 2px; text-align: center; }
+    
+    /* 履歴カード用CSS */
+    .history-card { background-color: #0d1117; border: 1px solid var(--github-border); border-radius: 6px; padding: 15px; margin-bottom: 15px; text-align: left; }
+    .history-header { display: flex; justify-content: space-between; border-bottom: 1px dashed #30363d; padding-bottom: 10px; margin-bottom: 10px; font-size: 13px; color: var(--gold); }
+    .history-label { font-size: 11px; color: var(--text-gray); margin-top: 10px; margin-bottom: 5px; }
+    .history-text { font-size: 13px; color: #c9d1d9; white-space: pre-wrap; line-height: 1.4; }
+    .badge-time { background: rgba(211, 173, 79, 0.2); padding: 2px 8px; border-radius: 10px; font-weight: bold; }
   </style>
 </head>
 <body>
@@ -46,53 +65,90 @@
 
   <div id="loading">📡 SYSTEM INITIALIZING...</div>
 
-  <div id="ui-container" class="card">
-    <div id="status-badge" class="status-badge">状態チェック中</div>
+  <div id="ui-container">
+    <div class="card">
+      <div id="status-badge" class="status-badge">状態チェック中</div>
 
-    <div id="clockin-section" style="display: none;">
-      <label>📝 Commit Plan (本日の業務予定を宣言)</label>
-      <textarea id="plan-input" placeholder="- 生徒Aの数学指導準備&#10;- 保護者面談の記録作成&#10;など、今日のコミットメントを入力"></textarea>
-      <button class="btn-start" id="btn-in" onclick="sendAction('clockIn')">▶ 業務開始 (Clock In)</button>
+      <div id="clockin-section" style="display: none;">
+        <label>📝 Commit Plan (本日の業務予定を宣言)</label>
+        <textarea id="plan-input" placeholder="- 生徒Aの数学指導準備&#10;- 保護者面談の記録作成&#10;など、今日のコミットメントを入力"></textarea>
+        <button class="btn-start" id="btn-in" onclick="sendAction('clockIn')">▶ 業務開始 (Clock In)</button>
+      </div>
+
+      <div id="clockout-section" style="display: none;">
+        <label>📌 宣言した本日の業務</label>
+        <div id="current-plan" class="plan-text-display"></div>
+        
+        <label>🚀 Push Result (実際の成果・報告)</label>
+        <textarea id="result-input" placeholder="- 生徒Aの数学指導完了。次回は三角関数。&#10;- 保護者面談記録を反映済み。&#10;など、成果や引継ぎ事項を入力"></textarea>
+        <button class="btn-end" id="btn-out" onclick="sendAction('clockOut')">⏹ 業務終了＆報告 (Push & Clock Out)</button>
+      </div>
+
+      <div id="completed-section" style="display: none; text-align: center; padding: 10px 0;">
+        <h3 style="color: var(--text-gray); margin:0;">🎉 本日の業務は終了しています</h3>
+      </div>
     </div>
 
-    <div id="clockout-section" style="display: none;">
-      <label>📌 宣言した本日の業務</label>
-      <div id="current-plan" class="plan-text-display"></div>
-      
-      <label>🚀 Push Result (実際の成果・報告)</label>
-      <textarea id="result-input" placeholder="- 生徒Aの数学指導完了。次回は三角関数。&#10;- 保護者面談記録をスプレッドシートに反映済み。&#10;など、成果や引継ぎ事項を入力"></textarea>
-      <button class="btn-end" id="btn-out" onclick="sendAction('clockOut')">⏹ 業務終了＆報告 (Push & Clock Out)</button>
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-title">累計業務時間</div>
+        <div class="stat-value" id="val-total">-時間-分</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-title">週平均稼働 (h)</div>
+        <div class="stat-value" id="val-week-avg">-</div>
+      </div>
     </div>
 
-    <div id="completed-section" style="display: none; text-align: center; padding: 20px 0;">
-      <h3 style="color: var(--text-gray);">🎉 本日の業務は終了しています</h3>
-      <p style="font-size: 13px; color: #666;">お疲れ様でした。ゆっくり休んでください。</p>
+    <div class="section-title">WORK TRENDS</div>
+    <div class="chart-container" id="box-daily">
+      <div class="chart-title">日別の業務推移 (h)</div>
+      <canvas id="dailyChart"></canvas>
+    </div>
+    <div class="chart-container" id="box-weekly">
+      <div class="chart-title">週別の業務推移 (h)</div>
+      <canvas id="weeklyChart"></canvas>
+    </div>
+    <div class="chart-container" id="box-monthly">
+      <div class="chart-title">月別の業務推移 (h)</div>
+      <canvas id="monthlyChart"></canvas>
+    </div>
+
+    <div class="section-title">WORK HISTORY</div>
+    <div id="history-list">
+      <div style="text-align:center; color:#666; font-size:13px;">記録がありません</div>
     </div>
   </div>
 
   <script>
     // ★新しいGASのWebアプリURLに書き換えてください
-    const API_ENDPOINT = 'https://script.google.com/macros/s/AKfycbymAQUjNiIR9fj-l5N_jBUAIIck_zU6gPtG-qozYdOTLNeybwZIUM5qRvG2M2RUQbkHmw/exec';
+    const API_ENDPOINT = 'https://script.google.com/macros/s/あなたの新しいURL/exec';
     const teacherToken = new URLSearchParams(location.search).get('token');
+    
+    let chartInstances = {};
 
     document.addEventListener('DOMContentLoaded', async () => {
       if (!teacherToken) {
         alert('URLが正しくありません。トークンが含まれていません。');
         return;
       }
-      await fetchStatus();
+      await fetchStatusAndStats();
     });
 
-    // 1. 現在のステータスを取得して画面を切り替える
-    async function fetchStatus() {
+    async function fetchStatusAndStats() {
       try {
         const res = await fetch(`${API_ENDPOINT}?action=status&token=${teacherToken}`);
         const json = await res.json();
         
         if (!json.ok) throw new Error(json.error);
         
-        document.getElementById('teacher-name').innerText = json.data.name + ' 先生';
-        switchUI(json.data.status, json.data.plan);
+        const data = json.data;
+        document.getElementById('teacher-name').innerText = data.name + ' 先生';
+        
+        // UI切り替え
+        switchUI(data.status, data.plan);
+        // ダッシュボード構築
+        renderDashboard(data.stats);
 
       } catch (err) {
         alert("初期化エラー: " + err.message);
@@ -102,7 +158,6 @@
       }
     }
 
-    // 2. 状態に合わせてUIを切り替え
     function switchUI(status, plan) {
       const badge = document.getElementById('status-badge');
       document.getElementById('clockin-section').style.display = 'none';
@@ -125,18 +180,74 @@
       }
     }
 
-    // 3. 出勤・退勤のアクションを送信
+    function renderDashboard(stats) {
+      // 数値サマリー
+      document.getElementById('val-total').innerText = stats.total;
+      
+      // 週平均の計算
+      const weeklyVals = stats.weekly.values;
+      const avgWeekly = weeklyVals.length > 0 
+        ? (weeklyVals.reduce((a, b) => a + parseFloat(b), 0) / weeklyVals.length).toFixed(1) 
+        : 0;
+      document.getElementById('val-week-avg').innerText = avgWeekly + " h";
+
+      // グラフ描画
+      drawChart('dailyChart', stats.daily.labels, stats.daily.values);
+      drawChart('weeklyChart', stats.weekly.labels, stats.weekly.values);
+      drawChart('monthlyChart', stats.monthly.labels, stats.monthly.values);
+
+      // 履歴一覧
+      const historyContainer = document.getElementById('history-list');
+      if (stats.history && stats.history.length > 0) {
+        historyContainer.innerHTML = stats.history.map(h => `
+          <div class="history-card">
+            <div class="history-header">
+              <span>🗓 ${escapeHtml(h.date)} (${escapeHtml(h.in)} - ${escapeHtml(h.out)})</span>
+              <span class="badge-time">${escapeHtml(h.time)}</span>
+            </div>
+            <div class="history-label">📝 Commit Plan</div>
+            <div class="history-text">${escapeHtml(h.plan) || "---"}</div>
+            <div class="history-label">🚀 Push Result</div>
+            <div class="history-text">${escapeHtml(h.result) || "---"}</div>
+          </div>
+        `).join('');
+      }
+    }
+
+    function drawChart(canvasId, labels, values) {
+      const ctx = document.getElementById(canvasId).getContext('2d');
+      if (chartInstances[canvasId]) chartInstances[canvasId].destroy();
+
+      chartInstances[canvasId] = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: labels,
+          datasets: [{
+            data: values,
+            backgroundColor: 'rgba(211, 173, 79, 0.5)',
+            borderColor: '#d3ad4f',
+            borderWidth: 1,
+            borderRadius: 4
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: { legend: { display: false } },
+          scales: {
+            y: { beginAtZero: true, grid: { color: '#333' }, ticks: { color: '#a0a0a0' } },
+            x: { grid: { display: false }, ticks: { color: '#a0a0a0' } }
+          }
+        }
+      });
+    }
+
     async function sendAction(action) {
       const planVal = document.getElementById('plan-input').value;
       const resultVal = document.getElementById('result-input').value;
       const btn = action === 'clockIn' ? document.getElementById('btn-in') : document.getElementById('btn-out');
 
-      if (action === 'clockIn' && !planVal) {
-        alert("本日の業務予定（Plan）を宣言してください。"); return;
-      }
-      if (action === 'clockOut' && !resultVal) {
-        alert("本日の成果報告（Result）を入力してください。"); return;
-      }
+      if (action === 'clockIn' && !planVal) { alert("本日の業務予定（Plan）を宣言してください。"); return; }
+      if (action === 'clockOut' && !resultVal) { alert("本日の成果報告（Result）を入力してください。"); return; }
 
       btn.disabled = true;
       const originalText = btn.innerText;
@@ -149,14 +260,13 @@
 
         const res = await fetch(API_ENDPOINT, {
           method: 'POST',
-          headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // CORS回避
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
           body: JSON.stringify(payload)
         });
         const json = await res.json();
 
         if (json.ok) {
           alert(json.message);
-          // 成功したら画面を再読み込みしてステータスを更新
           location.reload(); 
         } else {
           throw new Error(json.error);
@@ -166,6 +276,16 @@
         btn.disabled = false;
         btn.innerText = originalText;
       }
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
     }
   </script>
 </body>
