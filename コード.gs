@@ -4,8 +4,6 @@ const TEMPLATE_SHEET_NAME = "テンプレートシート";
 // ==========================================
 // ★ 管理者用：ドキュメントアクセス確認関数
 // ==========================================
-// GASエディタ上の「実行」ボタンからこの関数を実行すると、
-// 全講師のドキュメントURLが正しく開けるかログで確認できます。
 function checkAllDocsAccess() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const masterSheet = ss.getSheetByName(MASTER_SHEET_NAME);
@@ -43,7 +41,6 @@ function checkAllDocsAccess() {
   
   console.log(`=== 確認終了 (成功: ${successCount}, 失敗: ${errorCount}) ===`);
 }
-
 
 // ==========================================
 // 1. GETリクエスト（ステータス＆統計データ取得）
@@ -106,7 +103,7 @@ function getTeacherData(token) {
   const weeklyMap = {};
   const monthlyMap = {};
   const historyList = [];
-  let todayMs = 0; // ★今日の勤務時間を集計する変数
+  let todayMs = 0;
 
   const getMonday = (d) => {
     let day = d.getDay(), diff = d.getDate() - day + (day == 0 ? -6 : 1);
@@ -125,10 +122,10 @@ function getTeacherData(token) {
 
     if (rowDateStr === todayStr) {
       if (!outTimeStr) {
-        status = "working"; // 出勤時刻があって退勤がない場合は勤務中
+        status = "working";
         currentPlan = plan;
       } else {
-        status = "not_started"; // 退勤済みの場合は待機（再出勤可能）状態に戻す
+        status = "not_started";
       }
     }
 
@@ -141,7 +138,7 @@ function getTeacherData(token) {
     
     if (diffMs > 0) {
        if (rowDateStr === todayStr) {
-         todayMs += diffMs; // ★今日の日付なら勤務時間に加算
+         todayMs += diffMs;
        }
        const dObj = new Date(rowDateStr);
        const dayKey = Utilities.formatDate(dObj, "JST", "MM/dd");
@@ -182,7 +179,7 @@ function getTeacherData(token) {
       weekly: formatChartData(weeklyMap),
       monthly: formatChartData(monthlyMap),
       history: historyList.slice(0, 30),
-      today: formatTime(todayMs) // ★今日の勤務時間を返す
+      today: formatTime(todayMs)
     }
   };
 }
@@ -239,7 +236,7 @@ function doPost(e) {
       if (rowDate === todayStr) {
         targetRow = i + 1;
         clockInTime = data[i][1];
-        break; // ★複数回出勤でも「一番下の最新行」を見るので正常動作します
+        break; 
       }
     }
 
@@ -267,17 +264,35 @@ function doPost(e) {
         }
       }
 
+      // ★ Googleドキュメントへの【表形式】での追記処理
       if (teacherInfo.docUrl) {
         try {
           const docUrlStr = String(teacherInfo.docUrl).trim();
           const doc = docUrlStr.startsWith('http') ? DocumentApp.openByUrl(docUrlStr) : DocumentApp.openById(docUrlStr);
           const docBody = doc.getBody();
           
-          docBody.appendParagraph("--------------------------------------------------");
-          docBody.appendParagraph(`■ ${todayStr} ${timeStr} 退勤 （稼働：${workTimeStr}）`);
-          docBody.appendParagraph("【業務・成果報告】");
-          docBody.appendParagraph(body.result);
-          docBody.appendParagraph(""); 
+          // スプレッドシートに記録されている「今日の業務内容（Plan）」を取得
+          const planFromSheet = data[targetRow-1][4];
+          
+          // 表（テーブル）のデータを作成（2列×4行）
+          const tableData = [
+            ["日時", `${todayStr} ${timeStr}`],
+            ["作業時間", workTimeStr],
+            ["今日の業務内容", planFromSheet || "（記載なし）"],
+            ["成果報告", body.result || "（記載なし）"]
+          ];
+          
+          // ドキュメントに表を追加
+          const table = docBody.appendTable(tableData);
+          
+          // 見やすくするために1列目（項目名）の背景色をグレーにし、幅を固定する
+          for (let i = 0; i < 4; i++) {
+            const headerCell = table.getCell(i, 0);
+            headerCell.setBackgroundColor("#f3f3f3");
+            headerCell.setWidth(120);
+          }
+          
+          docBody.appendParagraph(""); // 次の記録との隙間を空ける
 
         } catch (docErr) {
           console.error("ドキュメント書き込みエラー: ", docErr.message);
