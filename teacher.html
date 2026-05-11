@@ -70,17 +70,17 @@
       <div id="status-badge" class="status-badge">状態チェック中</div>
 
       <div id="clockin-section" style="display: none;">
-        <label>📝 Commit Plan (本日の業務予定を宣言)</label>
-        <textarea id="plan-input" placeholder="- 生徒Aの数学指導準備&#10;- 保護者面談の記録作成&#10;など、現在のコミットメントを入力"></textarea>
+        <label>本日の業務予定</label>
+        <textarea id="plan-input" placeholder="- 今日の業務内容"></textarea>
         <button class="btn-start" id="btn-in" onclick="sendAction('clockIn')">▶ 業務開始 (Clock In)</button>
       </div>
 
       <div id="clockout-section" style="display: none;">
-        <label>📌 宣言した直近の業務</label>
+        <label>直近の業務</label>
         <div id="current-plan" class="plan-text-display"></div>
         
-        <label>🚀 Push Result (実際の成果・報告)</label>
-        <textarea id="result-input" placeholder="- 生徒Aの数学指導完了。次回は三角関数。&#10;- 保護者面談記録を反映済み。&#10;など、成果や引継ぎ事項を入力"></textarea>
+        <label>成果報告</label>
+        <textarea id="result-input" placeholder="- 成果を具体的に入力"></textarea>
         <button class="btn-end" id="btn-out" onclick="sendAction('clockOut')">⏹ 業務終了＆報告 (Push & Clock Out)</button>
       </div>
     </div>
@@ -243,12 +243,12 @@
       const resultVal = document.getElementById('result-input').value;
       const btn = action === 'clockIn' ? document.getElementById('btn-in') : document.getElementById('btn-out');
 
-      if (action === 'clockIn' && !planVal) { alert("本日の業務予定（Plan）を宣言してください。"); return; }
-      if (action === 'clockOut' && !resultVal) { alert("本日の成果報告（Result）を入力してください。"); return; }
+      if (action === 'clockIn' && !planVal) { alert("本日の業務予定を宣言してください。"); return; }
+      if (action === 'clockOut' && !resultVal) { alert("本日の成果報告を入力してください。"); return; }
 
       btn.disabled = true;
       const originalText = btn.innerText;
-      btn.innerText = "📡 通信中...";
+      btn.innerText = "記録中...";
 
       try {
         const payload = { action: action, token: teacherToken };
