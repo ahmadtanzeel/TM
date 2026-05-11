@@ -28,7 +28,12 @@ function getTeacherData(token) {
   let teacherInfo = null;
   for (let i = 1; i < masterData.length; i++) {
     if (String(masterData[i][2]).trim() === token) {
-      teacherInfo = { id: masterData[i][0], name: masterData[i][1], sheetName: masterData[i][3] };
+      teacherInfo = { 
+        id: masterData[i][0], 
+        name: masterData[i][1], 
+        sheetName: masterData[i][3],
+        docUrl: masterData[i][4] // ★E列：ドキュメントURL
+      };
       break;
     }
   }
@@ -43,7 +48,6 @@ function getTeacherData(token) {
       total: "0時間0分"
   };
 
-  // まだシートがない（出勤履歴ゼロ）場合
   if (!targetSheet) {
     return { name: teacherInfo.name, status: "not_started", plan: "", stats: emptyStats };
   }
@@ -65,7 +69,6 @@ function getTeacherData(token) {
     return new Date(d.getFullYear(), d.getMonth(), diff);
   };
 
-  // 履歴データとグラフ用データを集計
   for (let i = 1; i < data.length; i++) {
     const rowDateStr = data[i][0] instanceof Date ? Utilities.formatDate(data[i][0], "JST", "yyyy/MM/dd") : data[i][0];
     if (!rowDateStr) continue;
@@ -76,7 +79,6 @@ function getTeacherData(token) {
     const plan = data[i][4];
     const result = data[i][5];
 
-    // 今日のステータス判定
     if (rowDateStr === todayStr) {
       if (!outTimeStr) {
         status = "working";
@@ -86,7 +88,6 @@ function getTeacherData(token) {
       }
     }
 
-    // 時間の計算 (ms)
     let diffMs = 0;
     if (inTimeStr && outTimeStr) {
        const inDate = new Date(rowDateStr + " " + inTimeStr);
@@ -108,7 +109,6 @@ function getTeacherData(token) {
        monthlyMap[monthKey] = (monthlyMap[monthKey] || 0) + diffMs;
     }
 
-    // 履歴追加（最新のものが上に来るように unshift）
     historyList.unshift({
       date: rowDateStr,
       in: inTimeStr || "---",
@@ -135,7 +135,7 @@ function getTeacherData(token) {
       daily: formatChartData(dailyMap),
       weekly: formatChartData(weeklyMap),
       monthly: formatChartData(monthlyMap),
-      history: historyList.slice(0, 30), // 最新30件に制限
+      history: historyList.slice(0, 30),
       total: formatTime(totalMs)
     }
   };
@@ -157,13 +157,17 @@ function doPost(e) {
     let teacherInfo = null;
     for (let i = 1; i < masterData.length; i++) {
       if (String(masterData[i][2]).trim() === token) {
-        teacherInfo = { id: masterData[i][0], name: masterData[i][1], sheetName: masterData[i][3] };
+        teacherInfo = { 
+          id: masterData[i][0], 
+          name: masterData[i][1], 
+          sheetName: masterData[i][3],
+          docUrl: masterData[i][4] // ★E列：ドキュメントURL
+        };
         break;
       }
     }
     if (!teacherInfo) throw new Error("無効なトークンです。");
     
-    // シートがない場合は自動作成
     let targetSheet = ss.getSheetByName(teacherInfo.sheetName);
     if (!targetSheet) {
       const templateSheet = ss.getSheetByName(TEMPLATE_SHEET_NAME);
@@ -193,27 +197,58 @@ function doPost(e) {
       }
     }
 
+    // ----------------------------------------------------
+    // 出勤処理
+    // ----------------------------------------------------
     if (action === "clockIn") {
       if (targetRow !== -1 && !data[targetRow-1][2]) return jsonResponse({ ok: false, error: "すでに出勤しています" });
       targetSheet.appendRow([todayStr, timeStr, "", "", body.plan, ""]);
       return jsonResponse({ ok: true, message: "出勤しました。本日の業務を開始します。" });
     } 
     
+    // ----------------------------------------------------
+    // 退勤処理（＋ドキュメント追記）
+    // ----------------------------------------------------
     if (action === "clockOut") {
       if (targetRow === -1 || data[targetRow-1][2]) return jsonResponse({ ok: false, error: "出勤記録がないか、すでに退勤済みです" });
       
       targetSheet.getRange(targetRow, 3).setValue(timeStr);   
       targetSheet.getRange(targetRow, 6).setValue(body.result); 
       
+      let workTimeStr = "---";
       if (clockInTime) {
         const inDate = new Date(todayStr + " " + (clockInTime instanceof Date ? Utilities.formatDate(clockInTime, "JST", "HH:mm") : clockInTime));
         const diffMs = now - inDate;
         if (diffMs > 0) {
           const h = Math.floor(diffMs / 3600000);
           const m = Math.floor((diffMs % 3600000) / 60000);
-          targetSheet.getRange(targetRow, 4).setValue(`${h}時間${m}分`); 
+          workTimeStr = `${h}時間${m}分`;
+          targetSheet.getRange(targetRow, 4).setValue(workTimeStr); 
         }
       }
+
+      // ★ Googleドキュメントへの追記処理
+      if (teacherInfo.docUrl) {
+        try {
+          const docUrlStr = String(teacherInfo.docUrl).trim();
+          // URLでもIDでも開けるように処理
+          const doc = docUrlStr.startsWith('http') ? DocumentApp.openByUrl(docUrlStr) : DocumentApp.openById(docUrlStr);
+          const docBody = doc.getBody();
+          
+          // ドキュメントの末尾に、見やすくフォーマットして追記
+          docBody.appendParagraph("--------------------------------------------------");
+          docBody.appendParagraph(`■ ${todayStr} ${timeStr} 退勤 （稼働：${workTimeStr}）`);
+          docBody.appendParagraph("【業務・成果報告】");
+          docBody.appendParagraph(body.result);
+          docBody.appendParagraph(""); // 少し隙間を空ける
+
+        } catch (docErr) {
+          console.error("ドキュメント書き込みエラー: ", docErr.message);
+          // ドキュメントのURLが間違っていたり権限がなかったりしても、
+          // スプレッドシートの退勤記録は成功させるためにわざとエラーを揉み消します。
+        }
+      }
+
       return jsonResponse({ ok: true, message: "退勤と成果報告を完了しました。お疲れ様でした！" });
     }
   } catch (err) {
@@ -223,4 +258,10 @@ function doPost(e) {
 
 function jsonResponse(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+
+// 権限を通すためのダミー関数
+function setupPermissions() {
+  DocumentApp.create("権限確認用（すぐに削除してOKです）");
+  SpreadsheetApp.getActiveSpreadsheet();
 }
