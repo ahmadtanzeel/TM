@@ -139,7 +139,7 @@
         if (!json.ok) throw new Error(json.error);
         
         const data = json.data;
-        document.getElementById('teacher-name').innerText = data.name + ' 先生';
+        document.getElementById('teacher-name').innerText = data.name;
         
         // UI切り替え
         switchUI(data.status, data.plan);
