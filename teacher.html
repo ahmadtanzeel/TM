@@ -71,33 +71,34 @@
 
       <div id="clockin-section" style="display: none;">
         <label>📝 Commit Plan (本日の業務予定を宣言)</label>
-        <textarea id="plan-input" placeholder="- 生徒Aの数学指導準備&#10;- 保護者面談の記録作成&#10;など、今日のコミットメントを入力"></textarea>
+        <textarea id="plan-input" placeholder="- 生徒Aの数学指導準備&#10;- 保護者面談の記録作成&#10;など、現在のコミットメントを入力"></textarea>
         <button class="btn-start" id="btn-in" onclick="sendAction('clockIn')">▶ 業務開始 (Clock In)</button>
       </div>
 
       <div id="clockout-section" style="display: none;">
-        <label>📌 宣言した本日の業務</label>
+        <label>📌 宣言した直近の業務</label>
         <div id="current-plan" class="plan-text-display"></div>
         
         <label>🚀 Push Result (実際の成果・報告)</label>
         <textarea id="result-input" placeholder="- 生徒Aの数学指導完了。次回は三角関数。&#10;- 保護者面談記録を反映済み。&#10;など、成果や引継ぎ事項を入力"></textarea>
         <button class="btn-end" id="btn-out" onclick="sendAction('clockOut')">⏹ 業務終了＆報告 (Push & Clock Out)</button>
       </div>
-
-      <div id="completed-section" style="display: none; text-align: center; padding: 10px 0;">
-        <h3 style="color: var(--text-gray); margin:0;">🎉 本日の業務は終了しています</h3>
-      </div>
     </div>
 
     <div class="stats-grid">
       <div class="stat-card">
-        <div class="stat-title">累計業務時間</div>
-        <div class="stat-value" id="val-total">-時間-分</div>
+        <div class="stat-title">今日の勤務時間</div>
+        <div class="stat-value" id="val-today">-時間-分</div>
       </div>
       <div class="stat-card">
         <div class="stat-title">週平均稼働 (h)</div>
         <div class="stat-value" id="val-week-avg">-</div>
       </div>
+    </div>
+
+    <div class="section-title">WORK HISTORY</div>
+    <div id="history-list">
+      <div style="text-align:center; color:#666; font-size:13px;">記録がありません</div>
     </div>
 
     <div class="section-title">WORK TRENDS</div>
@@ -113,15 +114,10 @@
       <div class="chart-title">月別の業務推移 (h)</div>
       <canvas id="monthlyChart"></canvas>
     </div>
-
-    <div class="section-title">WORK HISTORY</div>
-    <div id="history-list">
-      <div style="text-align:center; color:#666; font-size:13px;">記録がありません</div>
-    </div>
   </div>
 
   <script>
-    // ★新しいGASのWebアプリURLに書き換えてください
+    // ★必ず新しいGASのWebアプリURLに書き換えてください！
     const API_ENDPOINT = 'https://script.google.com/macros/s/AKfycbymAQUjNiIR9fj-l5N_jBUAIIck_zU6gPtG-qozYdOTLNeybwZIUM5qRvG2M2RUQbkHmw/exec';
     const teacherToken = new URLSearchParams(location.search).get('token');
     
@@ -158,14 +154,14 @@
       }
     }
 
+    // ★ ステータスUIの切り替え（退勤後はスタンバイに戻る）
     function switchUI(status, plan) {
       const badge = document.getElementById('status-badge');
       document.getElementById('clockin-section').style.display = 'none';
       document.getElementById('clockout-section').style.display = 'none';
-      document.getElementById('completed-section').style.display = 'none';
 
       if (status === 'not_started') {
-        badge.innerText = "● STANDBY (未出勤)";
+        badge.innerText = "● STANDBY (出勤可能)";
         badge.className = "status-badge status-standby";
         document.getElementById('clockin-section').style.display = 'block';
       } else if (status === 'working') {
@@ -173,16 +169,12 @@
         badge.className = "status-badge status-working";
         document.getElementById('current-plan').innerText = plan || "（予定の宣言なし）";
         document.getElementById('clockout-section').style.display = 'block';
-      } else if (status === 'completed') {
-        badge.innerText = "✅ COMPLETED (退勤済)";
-        badge.className = "status-badge status-standby";
-        document.getElementById('completed-section').style.display = 'block';
       }
     }
 
     function renderDashboard(stats) {
-      // 数値サマリー
-      document.getElementById('val-total').innerText = stats.total;
+      // 数値サマリー（今日の勤務時間に変更）
+      document.getElementById('val-today').innerText = stats.today;
       
       // 週平均の計算
       const weeklyVals = stats.weekly.values;
@@ -213,41 +205,39 @@
         `).join('');
       }
     }
-function drawChart(canvasId, labels, values) {
+
+    // ★ グラフを「折れ線グラフ（曲線・塗りつぶし）」に変更
+    function drawChart(canvasId, labels, values) {
       const ctx = document.getElementById(canvasId).getContext('2d');
-      
-      // 既存のチャートがあれば破棄（更新時の重複防止）
-      if (chartInstances[canvasId]) {
-        chartInstances[canvasId].destroy();
-      }
+      if (chartInstances[canvasId]) chartInstances[canvasId].destroy();
 
       chartInstances[canvasId] = new Chart(ctx, {
-        type: 'line', // ★ 'bar'（棒）から 'line'（線）に変更
+        type: 'line',
         data: {
           labels: labels,
           datasets: [{
             data: values,
-            backgroundColor: 'rgba(211, 173, 79, 0.15)', // グラフの下の塗りつぶし色
-            borderColor: '#d3ad4f',                      // 線の色（ゴールド）
-            borderWidth: 2,                              // 線の太さ
-            fill: true,                                  // ★ 下部を塗りつぶす設定
-            tension: 0.4,                                // ★ 0.4にすると滑らかな曲線（0にすると直線）になります
-            pointBackgroundColor: '#d3ad4f',             // 丸い点の色
-            pointRadius: 3,                              // 点の大きさ
-            pointHoverRadius: 6                          // ホバー時の点の大きさ
+            backgroundColor: 'rgba(211, 173, 79, 0.15)',
+            borderColor: '#d3ad4f',
+            borderWidth: 2,
+            fill: true,
+            tension: 0.4,
+            pointBackgroundColor: '#d3ad4f',
+            pointRadius: 3,
+            pointHoverRadius: 6
           }]
         },
         options: {
           responsive: true,
-          animation: { duration: 1500, easing: 'easeOutQuart' }, // ふわっと表示されるアニメーション
           plugins: { legend: { display: false } },
           scales: {
             y: { beginAtZero: true, grid: { color: '#333' }, ticks: { color: '#a0a0a0' } },
-            x: { grid: { display: false }, ticks: { color: '#a0a0a0', maxRotation: 45, minRotation: 45 } }
+            x: { grid: { display: false }, ticks: { color: '#a0a0a0' } }
           }
         }
       });
     }
+
     async function sendAction(action) {
       const planVal = document.getElementById('plan-input').value;
       const resultVal = document.getElementById('result-input').value;

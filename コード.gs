@@ -2,6 +2,50 @@ const MASTER_SHEET_NAME = "管理者シート";
 const TEMPLATE_SHEET_NAME = "テンプレートシート";
 
 // ==========================================
+// ★ 管理者用：ドキュメントアクセス確認関数
+// ==========================================
+// GASエディタ上の「実行」ボタンからこの関数を実行すると、
+// 全講師のドキュメントURLが正しく開けるかログで確認できます。
+function checkAllDocsAccess() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const masterSheet = ss.getSheetByName(MASTER_SHEET_NAME);
+  if (!masterSheet) {
+    console.error("管理者シートが見つかりません。");
+    return;
+  }
+  
+  const data = masterSheet.getDataRange().getValues();
+  let successCount = 0;
+  let errorCount = 0;
+  
+  console.log("=== ドキュメントアクセス確認開始 ===");
+  
+  for (let i = 1; i < data.length; i++) {
+    const teacherName = data[i][1];
+    const docUrl = data[i][4]; // E列
+    
+    if (!docUrl) {
+      console.log(`[スキップ] ${teacherName} 先生: URLが設定されていません。`);
+      continue;
+    }
+    
+    try {
+      const docStr = String(docUrl).trim();
+      const doc = docStr.startsWith('http') ? DocumentApp.openByUrl(docStr) : DocumentApp.openById(docStr);
+      const name = doc.getName();
+      console.log(`[OK] ${teacherName} 先生: アクセス成功 (ドキュメント名: ${name})`);
+      successCount++;
+    } catch (err) {
+      console.error(`[エラー] ${teacherName} 先生: アクセス失敗 (${err.message}) URL: ${docUrl}`);
+      errorCount++;
+    }
+  }
+  
+  console.log(`=== 確認終了 (成功: ${successCount}, 失敗: ${errorCount}) ===`);
+}
+
+
+// ==========================================
 // 1. GETリクエスト（ステータス＆統計データ取得）
 // ==========================================
 function doGet(e) {
@@ -32,7 +76,7 @@ function getTeacherData(token) {
         id: masterData[i][0], 
         name: masterData[i][1], 
         sheetName: masterData[i][3],
-        docUrl: masterData[i][4] // ★E列：ドキュメントURL
+        docUrl: masterData[i][4] 
       };
       break;
     }
@@ -45,7 +89,7 @@ function getTeacherData(token) {
       weekly: { labels: [], values: [] },
       monthly: { labels: [], values: [] },
       history: [],
-      total: "0時間0分"
+      today: "0時間0分"
   };
 
   if (!targetSheet) {
@@ -62,7 +106,7 @@ function getTeacherData(token) {
   const weeklyMap = {};
   const monthlyMap = {};
   const historyList = [];
-  let totalMs = 0;
+  let todayMs = 0; // ★今日の勤務時間を集計する変数
 
   const getMonday = (d) => {
     let day = d.getDay(), diff = d.getDate() - day + (day == 0 ? -6 : 1);
@@ -81,10 +125,10 @@ function getTeacherData(token) {
 
     if (rowDateStr === todayStr) {
       if (!outTimeStr) {
-        status = "working";
+        status = "working"; // 出勤時刻があって退勤がない場合は勤務中
         currentPlan = plan;
       } else {
-        status = "completed";
+        status = "not_started"; // 退勤済みの場合は待機（再出勤可能）状態に戻す
       }
     }
 
@@ -96,7 +140,9 @@ function getTeacherData(token) {
     }
     
     if (diffMs > 0) {
-       totalMs += diffMs;
+       if (rowDateStr === todayStr) {
+         todayMs += diffMs; // ★今日の日付なら勤務時間に加算
+       }
        const dObj = new Date(rowDateStr);
        const dayKey = Utilities.formatDate(dObj, "JST", "MM/dd");
        dailyMap[dayKey] = (dailyMap[dayKey] || 0) + diffMs;
@@ -136,7 +182,7 @@ function getTeacherData(token) {
       weekly: formatChartData(weeklyMap),
       monthly: formatChartData(monthlyMap),
       history: historyList.slice(0, 30),
-      total: formatTime(totalMs)
+      today: formatTime(todayMs) // ★今日の勤務時間を返す
     }
   };
 }
@@ -161,7 +207,7 @@ function doPost(e) {
           id: masterData[i][0], 
           name: masterData[i][1], 
           sheetName: masterData[i][3],
-          docUrl: masterData[i][4] // ★E列：ドキュメントURL
+          docUrl: masterData[i][4] 
         };
         break;
       }
@@ -193,22 +239,16 @@ function doPost(e) {
       if (rowDate === todayStr) {
         targetRow = i + 1;
         clockInTime = data[i][1];
-        break;
+        break; // ★複数回出勤でも「一番下の最新行」を見るので正常動作します
       }
     }
 
-    // ----------------------------------------------------
-    // 出勤処理
-    // ----------------------------------------------------
     if (action === "clockIn") {
       if (targetRow !== -1 && !data[targetRow-1][2]) return jsonResponse({ ok: false, error: "すでに出勤しています" });
       targetSheet.appendRow([todayStr, timeStr, "", "", body.plan, ""]);
       return jsonResponse({ ok: true, message: "出勤しました。本日の業務を開始します。" });
     } 
     
-    // ----------------------------------------------------
-    // 退勤処理（＋ドキュメント追記）
-    // ----------------------------------------------------
     if (action === "clockOut") {
       if (targetRow === -1 || data[targetRow-1][2]) return jsonResponse({ ok: false, error: "出勤記録がないか、すでに退勤済みです" });
       
@@ -227,25 +267,20 @@ function doPost(e) {
         }
       }
 
-      // ★ Googleドキュメントへの追記処理
       if (teacherInfo.docUrl) {
         try {
           const docUrlStr = String(teacherInfo.docUrl).trim();
-          // URLでもIDでも開けるように処理
           const doc = docUrlStr.startsWith('http') ? DocumentApp.openByUrl(docUrlStr) : DocumentApp.openById(docUrlStr);
           const docBody = doc.getBody();
           
-          // ドキュメントの末尾に、見やすくフォーマットして追記
           docBody.appendParagraph("--------------------------------------------------");
           docBody.appendParagraph(`■ ${todayStr} ${timeStr} 退勤 （稼働：${workTimeStr}）`);
           docBody.appendParagraph("【業務・成果報告】");
           docBody.appendParagraph(body.result);
-          docBody.appendParagraph(""); // 少し隙間を空ける
+          docBody.appendParagraph(""); 
 
         } catch (docErr) {
           console.error("ドキュメント書き込みエラー: ", docErr.message);
-          // ドキュメントのURLが間違っていたり権限がなかったりしても、
-          // スプレッドシートの退勤記録は成功させるためにわざとエラーを揉み消します。
         }
       }
 
@@ -260,7 +295,6 @@ function jsonResponse(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
 
-// 権限を通すためのダミー関数
 function setupPermissions() {
   DocumentApp.create("権限確認用（すぐに削除してOKです）");
   SpreadsheetApp.getActiveSpreadsheet();
